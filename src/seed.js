@@ -1,0 +1,1 @@
+export const SEED = [{"id":"p1","lado":"A","setor":"DJUS","sala":"B19","porta":"19","switch":"3","obs":"","bruto":"B19 porta19 switch 3"},{"id":"p2","lado":"A","setor":"UTSC","sala":"G12","porta":"18","switch":"1","obs":"","bruto":"G12 porta18 switch 1"}];
