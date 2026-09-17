@@ -1,5 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import { SEED } from "./seed.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -30,15 +29,13 @@ function validId(v) {
 export class PontosStore extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
-    this.subscribers = new Set(); // Set of WritableStreamDefaultWriter
+    this.subscribers = new Set();
   }
 
   async ensureData() {
     const stored = await this.ctx.storage.get("pontos");
     if (Array.isArray(stored)) return stored;
-    // First boot – seed
-    await this.ctx.storage.put("pontos", SEED);
-    return SEED;
+    return [];
   }
 
   async getData() {
@@ -47,7 +44,6 @@ export class PontosStore extends DurableObject {
 
   async setData(next, reason) {
     await this.ctx.storage.put("pontos", next);
-    // keep a small journal of recent changes (last 50)
     try {
       const journal = (await this.ctx.storage.get("journal")) || [];
       journal.push({ time: new Date().toISOString(), reason, count: next.length });
@@ -83,6 +79,25 @@ export class PontosStore extends DurableObject {
       return new Response(null, { status: 204, headers: CORS });
     }
 
+    // Internal seed
+    if (path === "/internal/seed" && request.method === "POST") {
+      const current = await this.getData();
+      if (current.length > 0) {
+        return json({ ok: true, alreadySeeded: true, points: current.length });
+      }
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: "JSON inválido" }, 400);
+      }
+      if (!Array.isArray(body)) {
+        return json({ error: "esperado array" }, 400);
+      }
+      await this.setData(body, "SEED");
+      return json({ ok: true, seeded: true, points: body.length });
+    }
+
     // Health
     if (path === "/api/health" && request.method === "GET") {
       const data = await this.getData();
@@ -109,14 +124,12 @@ export class PontosStore extends DurableObject {
         await writer.write(encoder.encode(str));
       };
 
-      // Initial snapshot + keep-alive
       const data = await this.getData();
       await write("retry: 1500\n");
       await write(`data: ${JSON.stringify(data)}\n\n`);
 
       this.subscribers.add(writer);
 
-      // Heartbeat every 12s
       const heartbeat = setInterval(async () => {
         try {
           await write(`: heartbeat ${Date.now()}\n\n`);
@@ -126,7 +139,6 @@ export class PontosStore extends DurableObject {
         }
       }, 12000);
 
-      // Cleanup when client disconnects
       request.signal.addEventListener("abort", () => {
         clearInterval(heartbeat);
         this.subscribers.delete(writer);
@@ -180,7 +192,7 @@ export class PontosStore extends DurableObject {
       return json(item, 201);
     }
 
-    // Update / Delete by id
+    // Update / Delete
     const match = path.match(/^\/api\/pontos\/([^/]+)$/);
     if (match) {
       const id = decodeURIComponent(match[1]);
@@ -232,14 +244,46 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Route all /api/* to the single Durable Object
-    if (url.pathname.startsWith("/api/")) {
+    if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/")) {
       const id = env.PONTOS.idFromName("shared");
       const stub = env.PONTOS.get(id);
+
+      // Auto-seed on first access if empty
+      if (
+        url.pathname === "/api/pontos" ||
+        url.pathname === "/api/events" ||
+        url.pathname === "/api/health"
+      ) {
+        try {
+          const healthRes = await stub.fetch(
+            new Request("https://do/api/health", { method: "GET" })
+          );
+          const health = await healthRes.json();
+          if (health.points === 0) {
+            const seedRes = await env.ASSETS.fetch(
+              new Request("https://assets/data.json")
+            );
+            if (seedRes.ok) {
+              const seedData = await seedRes.json();
+              if (Array.isArray(seedData) && seedData.length > 0) {
+                await stub.fetch(
+                  new Request("https://do/internal/seed", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(seedData),
+                  })
+                );
+              }
+            }
+          }
+        } catch (e) {
+          console.error("seed check failed", e);
+        }
+      }
+
       return stub.fetch(request);
     }
 
-    // Static assets (index.html etc.)
     return env.ASSETS.fetch(request);
   },
 };
