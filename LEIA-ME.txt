@@ -1,0 +1,11 @@
+MAPA DE PONTOS DE REDE — Cloudflare Workers
+
+1. npm install
+2. npx wrangler login
+3. npm run dev          → teste local
+4. npm run deploy       → publicar
+
+Dados ficam no Durable Object (consistentes entre todos os usuários).
+SSE em tempo real + fila de operações pendentes no navegador (mesma lógica de antes).
+
+NÃO apague o Durable Object no dashboard ou os dados serão resetados para o seed.
